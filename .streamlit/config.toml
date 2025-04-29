@@ -1,0 +1,15 @@
+[theme]
+# Cor primária para elementos interativos
+primaryColor="#FFA500"  # Laranja
+
+# Cor de fundo principal
+backgroundColor="#FFFFFF"  # Branco
+
+# Cor de fundo para elementos como a sidebar, expanders, etc.
+secondaryBackgroundColor="#F0F2F6" # Um cinza claro (pode ajustar se preferir preto aqui, mas pode ficar pesado)
+
+# Cor do texto principal
+textColor="#000000"  # Preto
+
+# Base do tema (light ou dark)
+base="light"
