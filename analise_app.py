@@ -3,76 +3,71 @@ import pandas as pd
 import google.generativeai as genai
 import io # Para lidar com o arquivo em memória
 import time # Para possíveis pausas
+import plotly.express as px # Para gráficos
 
 # --- Configuração da Página (DEVE SER O PRIMEIRO COMANDO STREAMLIT) ---
-st.set_page_config(layout="wide") # Usa mais espaço da tela
+# O tema será aplicado automaticamente pelo arquivo .streamlit/config.toml
+st.set_page_config(
+    layout="wide",
+    page_title="Análise de Sentimento e Temática - IH", # Título que aparece na aba do navegador
+    page_icon="📊"
+)
 
-# --- Inicialização do Estado da Sessão (se necessário) ---
+# --- Inicialização do Estado da Sessão ---
 if 'api_key_configured' not in st.session_state:
     st.session_state.api_key_configured = False
 if 'api_key_input_value' not in st.session_state:
-     st.session_state.api_key_input_value = "" # Guarda o valor digitado
+     st.session_state.api_key_input_value = ""
 
 # --- Configuração da API Key ---
-api_key_source = None # Para rastrear de onde veio a chave (secrets ou input)
-
+api_key_source = None
 try:
-    # 1. Tenta carregar dos secrets (prioridade)
     if hasattr(st, 'secrets') and "GOOGLE_API_KEY" in st.secrets:
         st.session_state.api_key_input_value = st.secrets["GOOGLE_API_KEY"]
         api_key_source = "secrets"
-    # else: # Não achou nos secrets, deixa o usuário inserir
-
 except Exception as e:
     st.sidebar.warning(f"Não foi possível ler os secrets: {e}")
-    # Continua para permitir inserção manual
 
-# --- Interface da Barra Lateral para API Key (SEMPRE MOSTRA O CAMPO SE NÃO VEIO DOS SECRETS) ---
+# --- Interface da Barra Lateral para API Key ---
 st.sidebar.header("Configuração")
 if api_key_source != "secrets":
     user_provided_key = st.sidebar.text_input(
-        "Insira sua Google API Key aqui:",
-        type="password",
-        key="api_key_widget",
-        value=st.session_state.api_key_input_value # Mantem o valor entre runs
+        "Insira sua Google API Key aqui:", type="password",
+        key="api_key_widget", value=st.session_state.api_key_input_value
     )
-    # Atualiza o valor no estado da sessão se o usuário digitar algo
     if user_provided_key != st.session_state.api_key_input_value:
          st.session_state.api_key_input_value = user_provided_key
-         st.session_state.api_key_configured = False # Requer reconfiguração ao mudar
+         st.session_state.api_key_configured = False # Requer reconfiguração
 else:
-    # Se veio dos secrets, apenas informa
     st.sidebar.success("API Key carregada dos segredos!", icon="✅")
-    st.session_state.api_key_configured = False # Força a reconfiguração abaixo
+    if not st.session_state.api_key_configured: # Configura se veio dos secrets mas ainda não está marcado
+         st.session_state.api_key_configured = False # Força a tentativa de configuração abaixo
 
 # --- Tentativa de Configurar a API e o Modelo ---
 model = None
 if st.session_state.api_key_input_value and not st.session_state.api_key_configured:
     try:
         genai.configure(api_key=st.session_state.api_key_input_value)
-        # Tenta inicializar o modelo para validar a chave
         model = genai.GenerativeModel('gemini-1.5-flash')
-        st.session_state.api_key_configured = True # Marcar como configurado com sucesso
-        if api_key_source != "secrets": # Mostra sucesso só se foi digitada agora
-             st.sidebar.success("API Key configurada com sucesso!", icon="🔑")
+        st.session_state.api_key_configured = True
+        if api_key_source != "secrets":
+             st.sidebar.success("API Key configurada!", icon="🔑")
         st.sidebar.caption(f"Modelo Gemini: gemini-1.5-flash")
     except Exception as e:
-        st.sidebar.error(f"Erro ao configurar API Key/Modelo: Verifique a chave.")
+        st.sidebar.error(f"Erro API Key/Modelo. Verifique.")
         st.session_state.api_key_configured = False
-        model = None # Garante que modelo é None se falhar
-# Verifica se a chave foi configurada em algum momento
+        model = None
 elif st.session_state.api_key_configured:
-     # Chave já configurada, tenta re-inicializar o modelo (pode ter perdido estado)
      try:
           model = genai.GenerativeModel('gemini-1.5-flash')
-          st.sidebar.caption(f"Modelo Gemini: gemini-1.5-flash (Re-inicializado)")
+          #st.sidebar.caption(f"Modelo Gemini: gemini-1.5-flash (OK)") # Pode ficar repetitivo
      except Exception as e:
-          st.sidebar.error(f"Erro ao re-inicializar Modelo: {e}")
-          st.session_state.api_key_configured = False # Algo deu errado, precisa reconfigurar
+          st.sidebar.error(f"Erro Modelo: {e}")
+          st.session_state.api_key_configured = False
           model = None
 
-
-# --- Prompt Completo e Atualizado ---
+# --- Prompt Completo (Aguardando Dados para Refinamento) ---
+# !! IMPORTANTE: Este prompt será atualizado quando você fornecer os dados !!
 seu_prompt_completo = """
 Persona: Você é uma IA Analista de Feedback de Clientes e Social Listening de uma instituição financeira (banco) Brasileira, especializada em interpretar e classificar mensagens em Português do Brasil com alta precisão. Sua tarefa exige ir além da análise literal, inferindo o contexto provável das interações (posts sobre o banco, serviços, produtos, eventos, movimentos e campanhas de marca) para classificar o sentimento (Positivo, Negativo, Neutro) e o tema da maioria das mensagens, recorrendo a Não Classificado apenas como último recurso absoluto.
 Contexto: As mensagens são de clientes e público geral interagindo com posts e conteúdos de um banco (Itaú, Itaú Personnalité, Itaú Empresas, Uniclass, Itaú BBA, íon, Private) e suas iniciativas. Presuma que a maioria das mensagens curtas, emojis e interações são reações diretas ao conteúdo da marca.
@@ -149,178 +144,227 @@ categorias_tema_validas = [
 ]
 categorias_erro = ["Erro Parsing", "Erro API"]
 categorias_erro_tema_especifico = ["Erro API (Timeout)", "Erro API (Geral)", "Erro API (Modelo não iniciado)"]
+# Combina todas as categorias de erro para facilitar a filtragem
+todas_categorias_erro = list(set(categorias_erro + categorias_erro_tema_especifico))
+# Categorias a serem EXCLUÍDAS dos gráficos
+categorias_excluir_sentimento = ["Não Classificado"] + todas_categorias_erro
+categorias_excluir_tema = ["Não Classificado (Tema)"] + todas_categorias_erro
 
 # --- Função para Analisar um Comentário ---
-#@st.cache_data # Cache pode atrapalhar desenvolvimento
 def analisar_comentario(comentario, modelo_gemini):
     """Envia um comentário para a API Gemini e retorna o sentimento e tema classificados."""
     if not comentario or not isinstance(comentario, str) or comentario.strip() == "":
          return "Não Classificado", "Não Classificado (Tema)"
-    if not modelo_gemini: # Verifica se o objeto do modelo existe
-        st.warning(f"Tentativa de análise sem modelo Gemini inicializado para: '{comentario[:50]}...'")
+    if not modelo_gemini:
+        # st.warning(f"Tentativa de análise sem modelo Gemini inicializado para: '{comentario[:50]}...'") # Pode poluir muito
         return "Erro API", "Erro API (Modelo não iniciado)"
 
     prompt_com_comentario = seu_prompt_completo.format(comment=comentario)
     try:
-        safety_settings = {
-            "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE", "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
-            "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE", "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-        }
+        safety_settings = { "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE", "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
+                           "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE", "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE"}
         request_options = {"timeout": 60}
-        response = modelo_gemini.generate_content(
-            prompt_com_comentario, safety_settings=safety_settings, request_options=request_options
-            )
+        response = modelo_gemini.generate_content(prompt_com_comentario, safety_settings=safety_settings, request_options=request_options)
 
         texto_resposta = response.text.strip()
-        sentimento_extraido = "Erro Parsing"
-        tema_extraido = "Erro Parsing"
+        sentimento_extraido = "Erro Parsing"; tema_extraido = "Erro Parsing"
         linhas = texto_resposta.split('\n')
         for linha in linhas:
             linha_strip = linha.strip()
-            if linha_strip.lower().startswith("sentimento:"):
-                sentimento_extraido = linha_strip.split(":", 1)[1].strip()
-            elif linha_strip.lower().startswith("tema:"):
-                 tema_extraido = linha_strip.split(":", 1)[1].strip()
+            if linha_strip.lower().startswith("sentimento:"): sentimento_extraido = linha_strip.split(":", 1)[1].strip()
+            elif linha_strip.lower().startswith("tema:"): tema_extraido = linha_strip.split(":", 1)[1].strip()
 
         if sentimento_extraido == "Erro Parsing" or tema_extraido == "Erro Parsing":
-             st.warning(f"Formato resposta inesperado para '{comentario[:50]}...': '{texto_resposta}'")
+             st.warning(f"Formato resp. inesperado '{comentario[:50]}...': '{texto_resposta}'")
              return "Erro Parsing", "Erro Parsing"
 
         if sentimento_extraido not in categorias_sentimento_validas:
-            st.warning(f"Sentimento inválido '{sentimento_extraido}' retornado: '{comentario[:50]}...'")
+            st.warning(f"Sent. inválido '{sentimento_extraido}': '{comentario[:50]}...'")
             return "Erro Parsing", "Erro Parsing"
 
         if sentimento_extraido == "Não Classificado":
             if tema_extraido != "Não Classificado (Tema)":
-                st.warning(f"Correção: Sent='NC' mas Tema='{tema_extraido}'. Ajustado. Msg:'{comentario[:50]}...'")
+                #st.warning(f"Correção: Sent='NC' mas Tema='{tema_extraido}'. Ajustado. Msg:'{comentario[:50]}...'")
                 return "Não Classificado", "Não Classificado (Tema)"
-            else:
-                 return "Não Classificado", "Não Classificado (Tema)"
+            else: return "Não Classificado", "Não Classificado (Tema)"
         else: # Sentimento é P, N ou Neutro
              if tema_extraido not in categorias_tema_validas or tema_extraido == "Não Classificado (Tema)":
-                  st.warning(f"Tema inválido '{tema_extraido}' para Sent='{sentimento_extraido}'. Msg:'{comentario[:50]}...'")
-                  # Decide o que fazer: Erro Parsing ou tentar um fallback? Manter Erro por enquanto.
-                  return sentimento_extraido, "Erro Parsing" # Mantem o sentimento, mas marca tema como erro
-             else:
-                  return sentimento_extraido, tema_extraido # Tudo certo
+                  st.warning(f"Tema inválido '{tema_extraido}' p/ Sent='{sentimento_extraido}'. Msg:'{comentario[:50]}...'")
+                  return sentimento_extraido, "Erro Parsing"
+             else: return sentimento_extraido, tema_extraido
 
     except Exception as e:
-        if "timeout" in str(e).lower():
-             st.error(f"Timeout API: '{comentario[:50]}...'")
-             return "Erro API", "Erro API (Timeout)"
-        else:
-             st.error(f"Erro API Geral: '{comentario[:50]}...'. Erro: {e}")
-             return "Erro API", "Erro API (Geral)"
-
+        if "timeout" in str(e).lower(): st.error(f"Timeout API: '{comentario[:50]}...'"); return "Erro API", "Erro API (Timeout)"
+        else: st.error(f"Erro API Geral: '{comentario[:50]}...'."); return "Erro API", "Erro API (Geral)"
 
 # --- Interface Principal ---
-st.title("📊 Análise de Feedback e Social Listening com Gemini")
-st.markdown("Faça o upload da sua base de comentários (.csv ou .xlsx). A base **DEVE** conter uma coluna chamada `conteúdo`.")
+st.title("📊 Aplicativo para análise de sentimento e temática automatizado por IA")
+st.markdown("Este aplicativo foi desenvolvido pelo time de Social Intelligence do Hub de Inovação da Ihouse para o Itaú. As análises são realizadas e geradas através do Gemini.")
+st.markdown("---") # Linha divisória
 
 # --- Controles na Barra Lateral ---
 st.sidebar.divider()
 st.sidebar.header("Controles")
-uploaded_file = st.sidebar.file_uploader("1. Escolha o arquivo", type=["csv", "xlsx"], key="file_uploader")
+uploaded_file = st.sidebar.file_uploader("1. Escolha o arquivo (.csv ou .xlsx)", type=["csv", "xlsx"], key="file_uploader")
 
-# Botão de Análise - Habilitado se API configurada E arquivo carregado
 botao_habilitado = st.session_state.get('api_key_configured', False) and uploaded_file is not None
 analisar_btn = st.sidebar.button("2. Analisar Comentários", key="analyze_button", disabled=(not botao_habilitado))
 
-# Mensagens de status na sidebar
-if not st.session_state.get('api_key_configured', False):
-    st.sidebar.warning("API Key não configurada ou inválida.")
-if not uploaded_file:
-    st.sidebar.info("Aguardando upload do arquivo...")
-
+if not st.session_state.get('api_key_configured', False): st.sidebar.warning("API Key não configurada.")
+if not uploaded_file: st.sidebar.info("Aguardando upload do arquivo...")
 
 # --- Área Principal: Pré-visualização e Resultados ---
-df = None # Inicializa df como None
-total_comentarios_validos = 0
-
+df = None; total_comentarios_validos = 0
 if uploaded_file is not None:
     try:
         if uploaded_file.name.endswith('.csv'):
             try: df_original = pd.read_csv(uploaded_file)
-            except UnicodeDecodeError:
-                 uploaded_file.seek(0); df_original = pd.read_csv(uploaded_file, encoding='latin1')
+            except UnicodeDecodeError: uploaded_file.seek(0); df_original = pd.read_csv(uploaded_file, encoding='latin1')
         else: df_original = pd.read_excel(uploaded_file)
         df = df_original.copy()
 
-        if 'conteúdo' not in df.columns:
-            st.error("Erro Crítico: Coluna 'conteúdo' não encontrada.")
-            df = None # Invalida o dataframe
+        if 'conteúdo' not in df.columns: st.error("Erro Crítico: Coluna 'conteúdo' não encontrada."); df = None
         else:
             df.dropna(subset=['conteúdo'], inplace=True)
             df = df[df['conteúdo'].astype(str).str.strip() != '']
             total_comentarios_validos = len(df)
-
-    except Exception as e:
-        st.error(f"Erro ao ler o arquivo: {e}")
-        df = None # Invalida
+    except Exception as e: st.error(f"Erro ao ler o arquivo: {e}"); df = None
 
 if df is not None:
-    st.subheader("Pré-visualização dos dados (até 10 linhas):")
+    st.subheader("Pré-visualização dos dados:")
     st.dataframe(df.head(10))
     st.info(f"Total de comentários válidos (não vazios) encontrados: **{total_comentarios_validos}**")
 
+    # Container para mostrar após a análise
     results_container = st.container()
+
+    # Armazenar resultados no estado da sessão para persistir
+    if 'analysis_done' not in st.session_state: st.session_state.analysis_done = False
+    if 'df_results' not in st.session_state: st.session_state.df_results = None
+
     if analisar_btn:
-        if total_comentarios_validos == 0:
-            st.warning("Nenhum comentário válido para análise.")
-        elif not model:
-             st.error("Erro: Modelo Gemini não está inicializado. Verifique a API Key.")
+        if total_comentarios_validos == 0: st.warning("Nenhum comentário válido para análise.")
+        elif not model: st.error("Erro: Modelo Gemini não inicializado. Verifique a API Key.")
         else:
-            st.write(f"Iniciando análise de **{total_comentarios_validos}** comentários...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            with st.spinner(f"Analisando {total_comentarios_validos} comentários... Isso pode levar alguns minutos."):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                resultados_sentimento = []; resultados_tema = []
+                df_copy = df.copy() # Trabalhar com cópia para não afetar o df original da visualização
 
-            resultados_sentimento = []
-            resultados_tema = []
+                for i, comentario in enumerate(df_copy['conteúdo']):
+                    sentimento, tema = analisar_comentario(str(comentario), model)
+                    resultados_sentimento.append(sentimento)
+                    resultados_tema.append(tema)
+                    progresso = (i + 1) / total_comentarios_validos
+                    progress_bar.progress(progresso)
+                    status_text.text(f"Analisando: {i+1}/{total_comentarios_validos}")
+                    #time.sleep(0.01) # Pausa mínima opcional
 
-            for i, comentario in enumerate(df['conteúdo']):
-                sentimento, tema = analisar_comentario(str(comentario), model)
-                resultados_sentimento.append(sentimento)
-                resultados_tema.append(tema)
-                progresso = (i + 1) / total_comentarios_validos
-                progress_bar.progress(progresso)
-                status_text.text(f"Analisando: {i+1}/{total_comentarios_validos}")
-                # time.sleep(0.01) # Pequena pausa opcional
+                progress_bar.empty(); status_text.success(f"✅ Análise concluída!")
+                df_copy['Sentimento_Classificado'] = resultados_sentimento
+                df_copy['Tema_Classificado'] = resultados_tema
+                st.session_state.df_results = df_copy # Salva resultados no estado
+                st.session_state.analysis_done = True
+                st.rerun() # Força o rerodamento para exibir os resultados abaixo
 
-            progress_bar.empty(); status_text.success(f"✅ Análise concluída!")
+    # Exibe os resultados se a análise foi concluída
+    if st.session_state.analysis_done and st.session_state.df_results is not None:
+        df_results = st.session_state.df_results
+        total_analisados = len(df_results)
 
-            df['Sentimento_Classificado'] = resultados_sentimento
-            df['Tema_Classificado'] = resultados_tema
+        with results_container:
+            st.markdown("---")
+            st.subheader("Visualização dos Resultados")
 
-            with results_container:
-                st.subheader("Resultados Completos (com Classificação):")
-                st.dataframe(df)
+            # --- Gráficos (em colunas) ---
+            col1, col2 = st.columns(2)
 
-                # --- Tabelas Agregadas ---
-                st.subheader("Tabela 1: Análise de Sentimento")
-                todas_cats_sent = categorias_sentimento_validas + categorias_erro
-                sent_counts = df['Sentimento_Classificado'].value_counts().reindex(todas_cats_sent, fill_value=0)
-                sent_perc = (sent_counts / total_comentarios_validos * 100).round(2) if total_comentarios_validos > 0 else 0
+            with col1:
+                st.markdown("##### Distribuição de Sentimento")
+                # Filtrar para gráfico de sentimento
+                df_sent_chart = df_results[~df_results['Sentimento_Classificado'].isin(categorias_excluir_sentimento)]
+                sent_counts_chart = df_sent_chart['Sentimento_Classificado'].value_counts()
+                total_sent_chart = sent_counts_chart.sum()
+
+                if total_sent_chart > 0:
+                    sent_perc_chart = (sent_counts_chart / total_sent_chart * 100)
+                    df_plot_sent = pd.DataFrame({'Sentimento': sent_counts_chart.index, 'Volume': sent_counts_chart.values, 'Percentual': sent_perc_chart.values})
+
+                    fig_sent = px.pie(df_plot_sent, names='Sentimento', values='Volume', hole=0.4,
+                                      color='Sentimento',
+                                      color_discrete_map={'Positivo': 'green', 'Negativo': 'red', 'Neutro': 'gold'}, # Amarelo = gold
+                                      title='Sentimentos (Excluindo Não Classificado)')
+                    # Ajustar texto do hover e labels
+                    fig_sent.update_traces(textposition='inside',
+                                           textinfo='percent+label',
+                                           hovertemplate="<b>%{label}</b><br>Volume: %{value}<br>Percentual: %{percent:.1%}<extra></extra>")
+                    fig_sent.update_layout(showlegend=False, title_x=0.5, height=350, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(fig_sent, use_container_width=True)
+                else:
+                    st.warning("Nenhum sentimento válido (Positivo/Negativo/Neutro) classificado para exibir o gráfico.")
+
+            with col2:
+                st.markdown("##### Distribuição Temática")
+                 # Filtrar para gráfico de tema
+                df_tema_chart = df_results[~df_results['Tema_Classificado'].isin(categorias_excluir_tema)]
+                tema_counts_chart = df_tema_chart['Tema_Classificado'].value_counts()
+                total_tema_chart = tema_counts_chart.sum()
+
+                if total_tema_chart > 0:
+                    tema_perc_chart = (tema_counts_chart / total_tema_chart * 100)
+                    df_plot_tema = pd.DataFrame({'Tema': tema_counts_chart.index, 'Volume': tema_counts_chart.values, 'Percentual': tema_perc_chart.values})
+                    # Ordenar por Volume para o gráfico
+                    df_plot_tema = df_plot_tema.sort_values(by='Volume', ascending=False)
+
+                    fig_tema = px.bar(df_plot_tema, x='Tema', y='Volume',
+                                      color_discrete_sequence =['#FFA500']*len(df_plot_tema), # Laranja para todas as barras
+                                      title='Temas (Excluindo Não Classificado)',
+                                      text=df_plot_tema.apply(lambda row: f"{row['Volume']}<br>({row['Percentual']:.1f}%)", axis=1)) # Texto com volume e %
+                    fig_tema.update_traces(textposition='outside') # Coloca o texto fora da barra
+                    fig_tema.update_layout(xaxis_title=None, yaxis_title="Volume Bruto", title_x=0.5, height=350, margin=dict(l=10, r=10, t=40, b=10))
+                    # Rotacionar labels do eixo X se forem muitos temas
+                    fig_tema.update_xaxes(tickangle= -45)
+                    st.plotly_chart(fig_tema, use_container_width=True)
+                else:
+                     st.warning("Nenhum tema válido classificado para exibir o gráfico.")
+
+
+            # --- Tabelas Agregadas (Como antes) ---
+            st.markdown("---")
+            st.subheader("Tabelas de Resumo")
+            col_t1, col_t2 = st.columns(2)
+
+            with col_t1:
+                st.markdown("###### Tabela 1: Análise de Sentimento (Completa)")
+                todas_cats_sent = categorias_sentimento_validas + todas_categorias_erro
+                sent_counts = df_results['Sentimento_Classificado'].value_counts().reindex(todas_cats_sent, fill_value=0)
+                sent_perc = (sent_counts / total_analisados * 100).round(2) if total_analisados > 0 else 0
                 tabela_sent = pd.DataFrame({'Sentimento': sent_counts.index, 'Volume Bruto': sent_counts.values, 'Percentual (%)': sent_perc.values})
-                total_sent = pd.DataFrame({'Sentimento': ['Total'], 'Volume Bruto': [total_comentarios_validos], 'Percentual (%)': [100.0]})
-                tabela_sent = pd.concat([tabela_sent, total_sent], ignore_index=True)
+                total_sent = pd.DataFrame({'Sentimento': ['Total'], 'Volume Bruto': [total_analisados], 'Percentual (%)': [100.0]})
+                tabela_sent = pd.concat([tabela_sent[tabela_sent['Volume Bruto'] > 0], total_sent], ignore_index=True) # Mostra só linhas com valor > 0 + Total
                 st.table(tabela_sent.style.format({'Percentual (%)': '{:.2f}%'}))
 
-                st.subheader("Tabela 2: Análise Temática")
-                todas_cats_tema = categorias_tema_validas + categorias_erro + categorias_erro_tema_especifico
-                tema_counts = df['Tema_Classificado'].value_counts().reindex(todas_cats_tema, fill_value=0)
-                # Remover duplicatas se Erro API estiver em ambas listas (improvável, mas seguro)
-                tema_counts = tema_counts[~tema_counts.index.duplicated(keep='first')]
-                tema_perc = (tema_counts / total_comentarios_validos * 100).round(2) if total_comentarios_validos > 0 else 0
+            with col_t2:
+                st.markdown("###### Tabela 2: Análise Temática (Completa)")
+                todas_cats_tema = categorias_tema_validas + todas_categorias_erro
+                tema_counts = df_results['Tema_Classificado'].value_counts().reindex(todas_cats_tema, fill_value=0)
+                tema_counts = tema_counts[~tema_counts.index.duplicated(keep='first')] # Remove duplicatas caso existam
+                tema_perc = (tema_counts / total_analisados * 100).round(2) if total_analisados > 0 else 0
                 tabela_tema = pd.DataFrame({'Tema': tema_counts.index, 'Volume Bruto': tema_counts.values, 'Percentual (%)': tema_perc.values})
-                total_tema = pd.DataFrame({'Tema': ['Total'], 'Volume Bruto': [total_comentarios_validos], 'Percentual (%)': [100.0]})
-                tabela_tema = pd.concat([tabela_tema, total_tema], ignore_index=True)
+                total_tema = pd.DataFrame({'Tema': ['Total'], 'Volume Bruto': [total_analisados], 'Percentual (%)': [100.0]})
+                tabela_tema = pd.concat([tabela_tema[tabela_tema['Volume Bruto'] > 0], total_tema], ignore_index=True) # Mostra só linhas com valor > 0 + Total
                 st.table(tabela_tema.style.format({'Percentual (%)': '{:.2f}%'}))
 
-                # --- Botão Download ---
-                @st.cache_data
-                def convert_df_to_csv(df_conv): return df_conv.to_csv(index=False).encode('utf-8-sig')
-                csv_output = convert_df_to_csv(df)
-                st.download_button("💾 Download Resultados (.csv)", csv_output, 'analise_gemini.csv', 'text/csv', key='download_csv')
+            # --- Tabela Completa e Download ---
+            st.markdown("---")
+            st.subheader("Resultados Completos Detalhados")
+            st.dataframe(df_results)
+
+            @st.cache_data
+            def convert_df_to_csv(df_conv): return df_conv.to_csv(index=False).encode('utf-8-sig')
+            csv_output = convert_df_to_csv(df_results)
+            st.download_button("💾 Download Resultados (.csv)", csv_output, 'analise_gemini_resultados.csv', 'text/csv', key='download_csv')
 
 elif not uploaded_file and not analisar_btn :
      st.info("⬅️ Faça o upload de um arquivo .csv ou .xlsx na barra lateral para começar.")
